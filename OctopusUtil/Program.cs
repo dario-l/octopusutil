@@ -53,9 +53,12 @@ namespace OctopusUtil
 
             var group = repo.ProjectGroups.FindByName(groupName);
             if (group == null) throw new NullReferenceException($"Group '{groupName}' not found.");
-            var projects = repo.Projects.FindMany(x => x.ProjectGroupId == group.Id);
+
+            var projects = repo.Projects.FindMany(x => x.ProjectGroupId == group.Id && !x.IsDisabled);
             Console.WriteLine($"Found {projects.Count} projects...");
+
             var environment = environmentName != null ? repo.Environments.FindByName(environmentName) : null;
+
             foreach (var project in projects)
             {
                 var latestRelease = repo.Projects.GetReleases(project).Items
@@ -64,28 +67,7 @@ namespace OctopusUtil
 
                 if (latestRelease == null || latestRelease.Version != version)
                 {
-                    Console.WriteLine($"\t # create release for '{project.Name}' version {version}");
-
-                    var process = repo.DeploymentProcesses.Get(project.DeploymentProcessId);
-                    var template = repo.DeploymentProcesses.GetTemplate(process, null);
-
-                    var release = new ReleaseResource
-                    {
-                        Version = version ?? template.NextVersionIncrement,
-                        ProjectId = project.Id
-                    };
-
-                    foreach (var package in template.Packages)
-                    {
-                        var selectedPackage = new SelectedPackage
-                        {
-                            StepName = package.StepName,
-                            Version = version ?? package.VersionSelectedLastRelease
-                            //# Select a new version if you know it
-                        };
-                        release.SelectedPackages.Add(selectedPackage);
-                    }
-                    latestRelease = repo.Releases.Create(release);
+                    latestRelease = CreateRelease(repo, project, version);
                 }
                 else
                 {
@@ -94,16 +76,41 @@ namespace OctopusUtil
 
                 if (environment != null && latestRelease != null && repo.Deployments.FindMany(x => x.ReleaseId == latestRelease.Id).Count == 0)
                 {
-                    var deploy = new DeploymentResource
-                    {
-                        ProjectId = project.Id,
-                        ReleaseId = latestRelease.Id,
-                        EnvironmentId = environment.Id
-                    };
-                    repo.Deployments.Create(deploy);
-                    Console.WriteLine($"\t # deploying '{project.Name}' version {version} to {environmentName}");
+                    CreateDeploy(repo, project, environment, latestRelease);
                 }
             }
+        }
+
+        private static void CreateDeploy(IOctopusRepository repo, ProjectResource project, EnvironmentResource environment, ReleaseSummaryResource latestRelease)
+        {
+            Console.WriteLine($"\t # deploying '{project.Name}' version {latestRelease.Version} to {environment.Name}");
+            var deploy = new DeploymentResource
+            {
+                ProjectId = project.Id,
+                ReleaseId = latestRelease.Id,
+                EnvironmentId = environment.Id
+            };
+            repo.Deployments.Create(deploy);
+        }
+
+        private static ReleaseResource CreateRelease(OctopusRepository repo, ProjectResource project, string version)
+        {
+            Console.WriteLine($"\t # create release for '{project.Name}' version {version}");
+
+            var process = repo.DeploymentProcesses.Get(project.DeploymentProcessId);
+            var template = repo.DeploymentProcesses.GetTemplate(process, null);
+
+            var release = new ReleaseResource
+            {
+                Version = version,
+                ProjectId = project.Id
+            };
+
+            foreach (var package in template.Packages)
+            {
+                release.SelectedPackages.Add(new SelectedPackage(package.StepName, version));
+            }
+            return repo.Releases.Create(release);
         }
     }
 }
